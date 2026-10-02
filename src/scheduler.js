@@ -1,5 +1,7 @@
+import fs from "node:fs/promises";
 import { captureStill } from "./capture.js";
 import { uploadCapture } from "./upload.js";
+import { pushLiveFrame } from "./live-upload.js";
 
 /** Shared mutable status for /health */
 export const state = {
@@ -9,13 +11,14 @@ export const state = {
   lastUploadAt: null,
   lastUploadId: null,
   lastUploadStatus: null,
+  lastLivePushAt: null,
   lastError: null,
   consecutiveFailures: 0,
   tickCount: 0,
 };
 
 /**
- * One capture + upload cycle. Safe to call while previous is running (no-op).
+ * One capture + live push + analysis upload. Safe to call while previous is running (no-op).
  */
 export async function runCycle() {
   if (state.running) {
@@ -33,7 +36,21 @@ export async function runCycle() {
     state.lastCaptureAt = capture.capturedAt;
     console.log(`[scheduler] tick #${tick}: captured ${capture.filePath}`);
 
-    console.log(`[scheduler] tick #${tick}: uploading…`);
+    const buf = await fs.readFile(capture.filePath);
+
+    // Live dashboard first (cheap, in-memory on server)
+    try {
+      await pushLiveFrame(buf);
+      state.lastLivePushAt = new Date().toISOString();
+      console.log(`[scheduler] tick #${tick}: live frame pushed`);
+    } catch (liveErr) {
+      console.warn(
+        `[scheduler] tick #${tick}: live push failed:`,
+        liveErr.message || liveErr,
+      );
+    }
+
+    console.log(`[scheduler] tick #${tick}: analysis uploading…`);
     const result = await uploadCapture(capture);
     state.lastUploadAt = new Date().toISOString();
     state.lastUploadId = result.id;
@@ -61,7 +78,6 @@ export function startScheduler(intervalMs) {
     `[scheduler] starting; interval=${intervalMs}ms (${(intervalMs / 1000 / 60).toFixed(1)} min)`,
   );
 
-  // Fire first cycle without waiting
   void runCycle();
 
   return setInterval(() => {

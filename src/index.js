@@ -41,10 +41,17 @@ app.listen(config.port, () => {
   console.log(`[pi-camera] gawdary ${config.gawdaryUrl}`);
 
   if (config.liveEnabled) {
-    console.log("[pi-camera] live stream ON (rpicam-vid → /live/frame + periodic /captures)");
+    console.log(
+      "[pi-camera] live stream ON (rpicam-vid → /live/frame + periodic /captures)",
+    );
+    console.log(
+      "[pi-camera] tip: set LIVE_ENABLED=false to use rpicam-still only (still pushes live frames too)",
+    );
     startLiveStream();
   } else {
-    console.log("[pi-camera] live stream OFF — still capture scheduler only");
+    console.log(
+      "[pi-camera] live stream OFF — still capture + live frame push every interval",
+    );
     startScheduler(config.captureIntervalMs);
   }
 });

@@ -56,7 +56,7 @@ export const config = {
   imageHeight: intEnv("IMAGE_HEIGHT", 1080),
   imageQuality: intEnv("IMAGE_QUALITY", 90),
   /** Live MJPEG stream via rpicam-vid (default on). */
-  liveEnabled: boolEnv("LIVE_ENABLED", true),
+  liveEnabled: boolEnv("LIVE_ENABLED", false),
   liveWidth: intEnv("LIVE_WIDTH", 640),
   liveHeight: intEnv("LIVE_HEIGHT", 480),
   liveFps: intEnv("LIVE_FPS", 5),
