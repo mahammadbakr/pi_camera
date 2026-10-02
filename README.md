@@ -12,7 +12,7 @@ Node.js service for a Raspberry Pi: capture a JPEG with `rpicam-still` every 5 m
 
 ```bash
 cp .env.example .env
-# Set API_TOKEN to the same value as the Gawdary server API_TOKEN
+# Only API_TOKEN is required (same as Gawdary server)
 npm install
 npm start
 ```
@@ -21,10 +21,17 @@ Local health: `http://localhost:3080/health`
 
 ## Config
 
+**Required**
+
+| Variable | Purpose |
+|----------|---------|
+| `API_TOKEN` | Bearer token (shared with Gawdary) |
+
+**Optional** (built-in defaults)
+
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GAWDARY_URL` | `https://gawdary-server.onrender.com` | API base URL |
-| `API_TOKEN` | (required) | Bearer token (shared with Gawdary) |
 | `CAPTURE_INTERVAL_MS` | `300000` | Interval between captures (5 min) |
 | `CAPTURE_DIR` | `/tmp/pi-camera` | Where JPEGs are written |
 | `RPICAM_BIN` | `rpicam-still` | Capture binary |
