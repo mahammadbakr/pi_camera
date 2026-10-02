@@ -1,0 +1,24 @@
+import { config } from "./config.js";
+
+/**
+ * Push a JPEG buffer to Gawdary live endpoint (display only).
+ * @param {Buffer} buffer
+ */
+export async function pushLiveFrame(buffer) {
+  const url = `${config.gawdaryUrl}/api/v1/live/frame`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.apiToken}`,
+      "Content-Type": "image/jpeg",
+    },
+    body: buffer,
+  });
+
+  if (res.status === 204 || res.status === 200) return;
+
+  const text = await res.text().catch(() => "");
+  const err = new Error(`Live push failed HTTP ${res.status}: ${text.slice(0, 200)}`);
+  err.status = res.status;
+  throw err;
+}

@@ -4,7 +4,7 @@ import { config } from "./config.js";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Upload a JPEG to Gawdary POST /api/v1/captures
+ * Upload a JPEG to Gawdary POST /api/v1/captures (analysis path).
  * Retries once on network errors or 5xx.
  * @param {{ filePath: string, capturedAt: string }} capture
  * @returns {Promise<{ id: string, status: string }>}

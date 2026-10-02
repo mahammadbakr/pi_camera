@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { startScheduler, state } from "./scheduler.js";
+import { startLiveStream, liveState } from "./live.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(
@@ -17,28 +18,33 @@ app.get("/", (_req, res) => {
     name: pkg.name,
     version: pkg.version,
     ok: true,
+    liveEnabled: config.liveEnabled,
   });
 });
 
 app.get("/health", (_req, res) => {
   res.json({
-    ok: state.consecutiveFailures < 3,
+    ok:
+      config.liveEnabled
+        ? liveState.consecutivePushFailures < 10
+        : state.consecutiveFailures < 3,
     gawdaryUrl: config.gawdaryUrl,
+    liveEnabled: config.liveEnabled,
     captureIntervalMs: config.captureIntervalMs,
-    startedAt: state.startedAt,
-    running: state.running,
-    tickCount: state.tickCount,
-    lastCaptureAt: state.lastCaptureAt,
-    lastUploadAt: state.lastUploadAt,
-    lastUploadId: state.lastUploadId,
-    lastUploadStatus: state.lastUploadStatus,
-    lastError: state.lastError,
-    consecutiveFailures: state.consecutiveFailures,
+    still: state,
+    live: liveState,
   });
 });
 
 app.listen(config.port, () => {
   console.log(`[pi-camera] health listening on :${config.port}`);
-  console.log(`[pi-camera] uploading to ${config.gawdaryUrl}/api/v1/captures`);
-  startScheduler(config.captureIntervalMs);
+  console.log(`[pi-camera] gawdary ${config.gawdaryUrl}`);
+
+  if (config.liveEnabled) {
+    console.log("[pi-camera] live stream ON (rpicam-vid → /live/frame + periodic /captures)");
+    startLiveStream();
+  } else {
+    console.log("[pi-camera] live stream OFF — still capture scheduler only");
+    startScheduler(config.captureIntervalMs);
+  }
 });
