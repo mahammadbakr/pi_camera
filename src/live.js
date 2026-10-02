@@ -12,8 +12,10 @@ export const liveState = {
   startedAt: null,
   framesParsed: 0,
   framesPushed: 0,
+  framesDropped: 0,
   lastFrameAt: null,
   lastPushAt: null,
+  lastPushMs: null,
   lastPushOk: null,
   lastAnalysisAt: null,
   lastAnalysisId: null,
@@ -30,7 +32,10 @@ function findJpegEnd(buf, from = 0) {
 
 /**
  * Continuous rpicam-vid MJPEG → live push + periodic analysis upload.
- * Uses one camera process so still + video don't fight for exclusive access.
+ *
+ * Important: network to Render is slower than camera FPS. We keep only the
+ * newest frame ("latest wins") and push as fast as uploads allow — never
+ * wait for every camera frame or you'll only get ~1 frame per RTT (~8s).
  */
 export function startLiveStream() {
   liveState.startedAt = new Date().toISOString();
@@ -47,23 +52,40 @@ export function startLiveStream() {
     String(config.liveHeight),
     "--framerate",
     String(config.liveFps),
+    "--flush",
     "-n",
     "-o",
     "-",
   ];
 
   console.log(
-    `[live] starting ${config.rpicamVidBin} ${config.liveWidth}x${config.liveHeight}@${config.liveFps} → live + analysis every ${config.captureIntervalMs}ms`,
+    `[live] starting ${config.rpicamVidBin} ${config.liveWidth}x${config.liveHeight}@${config.liveFps}`,
+  );
+  console.log(
+    `[live] analysis every ${config.captureIntervalMs}ms; live push = latest-wins (not every frame)`,
+  );
+  console.log(
+    `[live] note: "Stream configuration adjusted" from rpicam is normal`,
   );
 
   let child = null;
   let restartTimer = null;
+  let statsTimer = null;
   let stopping = false;
   let buffer = Buffer.alloc(0);
+
+  /** @type {Buffer | null} */
+  let pendingLive = null;
   let pushBusy = false;
+
   let analysisBusy = false;
   let lastAnalysisMs = 0;
-  let parsedSincePush = 0;
+  /** @type {Buffer | null} */
+  let latestForAnalysis = null;
+
+  let parsedWindow = 0;
+  let pushedWindow = 0;
+  let droppedWindow = 0;
 
   const spawnCam = () => {
     if (stopping) return;
@@ -73,7 +95,10 @@ export function startLiveStream() {
 
     child.stderr.on("data", (chunk) => {
       const msg = chunk.toString().trim();
-      if (msg) console.warn("[live/rpicam]", msg.slice(0, 300));
+      // libcamera prints "Stream configuration adjusted" once at start — ignore noise
+      if (!msg) return;
+      if (/stream configuration adjusted/i.test(msg)) return;
+      console.warn("[live/rpicam]", msg.slice(0, 300));
     });
 
     child.on("error", (err) => {
@@ -83,7 +108,6 @@ export function startLiveStream() {
 
     child.stdout.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
-      // Cap buffer to avoid OOM if stream corrupts
       if (buffer.length > 8 * 1024 * 1024) {
         buffer = buffer.subarray(buffer.length - 2 * 1024 * 1024);
       }
@@ -101,7 +125,7 @@ export function startLiveStream() {
 
         const jpeg = Buffer.from(buffer.subarray(0, end));
         buffer = buffer.subarray(end);
-        void onJpeg(jpeg);
+        onJpeg(jpeg);
       }
     });
 
@@ -117,63 +141,97 @@ export function startLiveStream() {
     });
   };
 
-  async function onJpeg(jpeg) {
+  function onJpeg(jpeg) {
     liveState.framesParsed += 1;
+    parsedWindow += 1;
     liveState.lastFrameAt = new Date().toISOString();
-    parsedSincePush += 1;
+    latestForAnalysis = jpeg;
 
-    // Persist latest for local debug / analysis upload source
+    // Latest-wins: overwrite pending; if a push is in flight this frame may be dropped
+    if (pendingLive) {
+      liveState.framesDropped += 1;
+      droppedWindow += 1;
+    }
+    pendingLive = jpeg;
+    void kickLivePush();
+    void maybeAnalysis();
+  }
+
+  async function kickLivePush() {
+    if (pushBusy || stopping) return;
+    pushBusy = true;
+
     try {
-      await fs.mkdir(config.captureDir, { recursive: true });
-      await fs.writeFile(livePath(), jpeg);
-    } catch {
-      /* non-fatal */
-    }
+      while (pendingLive && !stopping) {
+        const frame = pendingLive;
+        pendingLive = null;
 
-    if (parsedSincePush >= config.livePushEvery && !pushBusy) {
-      parsedSincePush = 0;
-      pushBusy = true;
-      try {
-        await pushLiveFrame(jpeg);
-        liveState.framesPushed += 1;
-        liveState.lastPushAt = new Date().toISOString();
-        liveState.lastPushOk = true;
-        liveState.consecutivePushFailures = 0;
-        liveState.lastError = null;
-      } catch (err) {
-        liveState.lastPushOk = false;
-        liveState.consecutivePushFailures += 1;
-        liveState.lastError = err.message || String(err);
-        if (liveState.consecutivePushFailures <= 3 || liveState.consecutivePushFailures % 20 === 0) {
-          console.warn("[live] push failed:", liveState.lastError);
+        const t0 = Date.now();
+        try {
+          await pushLiveFrame(frame);
+          const ms = Date.now() - t0;
+          liveState.framesPushed += 1;
+          pushedWindow += 1;
+          liveState.lastPushAt = new Date().toISOString();
+          liveState.lastPushMs = ms;
+          liveState.lastPushOk = true;
+          liveState.consecutivePushFailures = 0;
+          liveState.lastError = null;
+        } catch (err) {
+          liveState.lastPushOk = false;
+          liveState.lastPushMs = Date.now() - t0;
+          liveState.consecutivePushFailures += 1;
+          liveState.lastError = err.message || String(err);
+          if (
+            liveState.consecutivePushFailures <= 3 ||
+            liveState.consecutivePushFailures % 20 === 0
+          ) {
+            console.warn("[live] push failed:", liveState.lastError);
+          }
+          // brief backoff on failure so we don't hammer a dead server
+          await new Promise((r) => setTimeout(r, 250));
         }
-      } finally {
-        pushBusy = false;
       }
-    }
-
-    const now = Date.now();
-    if (
-      !analysisBusy &&
-      now - lastAnalysisMs >= config.captureIntervalMs
-    ) {
-      analysisBusy = true;
-      lastAnalysisMs = now;
-      try {
-        const capturedAt = new Date().toISOString();
-        const filePath = livePath();
-        await fs.writeFile(filePath, jpeg);
-        const result = await uploadCapture({ filePath, capturedAt });
-        liveState.lastAnalysisAt = capturedAt;
-        liveState.lastAnalysisId = result.id;
-        console.log(`[live] analysis upload id=${result.id}`);
-      } catch (err) {
-        console.warn("[live] analysis upload failed:", err.message || err);
-      } finally {
-        analysisBusy = false;
-      }
+    } finally {
+      pushBusy = false;
+      if (pendingLive && !stopping) void kickLivePush();
     }
   }
+
+  async function maybeAnalysis() {
+    const now = Date.now();
+    if (analysisBusy || !latestForAnalysis) return;
+    if (now - lastAnalysisMs < config.captureIntervalMs) return;
+
+    analysisBusy = true;
+    lastAnalysisMs = now;
+    const jpeg = latestForAnalysis;
+
+    try {
+      await fs.mkdir(config.captureDir, { recursive: true });
+      const filePath = livePath();
+      await fs.writeFile(filePath, jpeg);
+      const capturedAt = new Date().toISOString();
+      const result = await uploadCapture({ filePath, capturedAt });
+      liveState.lastAnalysisAt = capturedAt;
+      liveState.lastAnalysisId = result.id;
+      console.log(`[live] analysis upload id=${result.id}`);
+    } catch (err) {
+      console.warn("[live] analysis upload failed:", err.message || err);
+    } finally {
+      analysisBusy = false;
+    }
+  }
+
+  statsTimer = setInterval(() => {
+    if (stopping) return;
+    console.log(
+      `[live] stats 5s: parsed=${parsedWindow} pushed=${pushedWindow} dropped=${droppedWindow} lastPushMs=${liveState.lastPushMs ?? "—"}`,
+    );
+    parsedWindow = 0;
+    pushedWindow = 0;
+    droppedWindow = 0;
+  }, 5_000);
 
   spawnCam();
 
@@ -181,6 +239,7 @@ export function startLiveStream() {
     stop() {
       stopping = true;
       if (restartTimer) clearTimeout(restartTimer);
+      if (statsTimer) clearInterval(statsTimer);
       if (child) child.kill("SIGTERM");
       liveState.running = false;
     },
