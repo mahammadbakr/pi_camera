@@ -21,12 +21,12 @@ Local health: `http://localhost:3080/health`
 
 ## What it does
 
-1. **Live preview**: every capture also `POST /api/v1/live/frame` (dashboard polls this)
-2. **Analysis**: every `CAPTURE_INTERVAL_MS` → `POST /api/v1/captures`
+1. **Live stream** (default): `rpicam-vid` MJPEG ~5 fps → `POST /api/v1/live/frame`
+2. **Analysis**: every `CAPTURE_INTERVAL_MS`, a frame from that stream → `POST /api/v1/captures`
 
-Default mode uses `rpicam-still` (`LIVE_ENABLED=false`) so the path that already works for analysis also feeds the live viewer.
+One camera process (`rpicam-vid`) avoids exclusive-access conflicts.
 
-Set `LIVE_ENABLED=true` for smoother `rpicam-vid` MJPEG (~5 fps) once that binary is confirmed on the Pi.
+Set `LIVE_ENABLED=false` to fall back to `rpicam-still` (still pushes live frames each interval).
 
 ## Config
 
@@ -42,7 +42,7 @@ Set `LIVE_ENABLED=true` for smoother `rpicam-vid` MJPEG (~5 fps) once that binar
 |----------|---------|---------|
 | `GAWDARY_URL` | `https://gawdary-server.onrender.com` | API base URL |
 | `CAPTURE_INTERVAL_MS` | `8000` | Analysis upload interval |
-| `LIVE_ENABLED` | `false` | `true` = rpicam-vid stream; `false` = still + live push |
+| `LIVE_ENABLED` | `true` | `rpicam-vid` live stream (set `false` for still-only) |
 | `LIVE_WIDTH` / `LIVE_HEIGHT` / `LIVE_FPS` | `640` / `480` / `5` | Stream settings |
 | `RPICAM_VID_BIN` | `rpicam-vid` | Video binary |
 | `RPICAM_BIN` | `rpicam-still` | Still binary (fallback mode) |
